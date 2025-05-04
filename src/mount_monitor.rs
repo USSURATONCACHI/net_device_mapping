@@ -51,6 +51,9 @@ pub fn monitor_mountinfo() -> Result<
                     if send.send(MountChange::Modified(event.path)).is_err() {
                         break 'main;
                     }
+
+                    // TODO: Rescan the file in the path and compare with previous scan
+                    // TODO: Custom scanners for each filepath. Default is /proc/self/mountinfo
                 }
             }
         }

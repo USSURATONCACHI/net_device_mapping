@@ -62,6 +62,8 @@ pub enum Error {
 
 impl NetworkNamespace {
     pub async fn all() -> Result<Vec<NetworkNamespace>, Error> {
+        // TODO: Scan `/proc/*/task/<tid>/net/ns` for actual processes instead of `/proc/*/net/ns/`.
+        
         // Map from netns inode, to list of PIDs in that inode.
         let mut inodes: HashMap<INode, NetworkNamespace> = HashMap::new();
 

@@ -3,11 +3,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use cargo_metadata::MetadataCommand;
+
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let ebpf_out_dir = out_dir.join("ebpf");
     let ebpf_src = Path::new("ebpf/fork_monitor.bpf.c");
     let vmlinux_h = ebpf_out_dir.join("vmlinux.h");
+
+    let meta = MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .unwrap();
+    let profile = env::var("PROFILE").unwrap();
+    let bin_dir = meta.target_directory.join(profile).into_std_path_buf();
 
     // Ensure output directory exists
     fs::create_dir_all(&ebpf_out_dir).expect("Failed to create ebpf output directory");
@@ -42,7 +51,7 @@ fn main() {
     );
 
     // Compile eBPF program
-    let ebpf_out_obj = Path::new("target/debug/ebpf/fork_monitor.bpf.o");
+    let ebpf_out_obj = bin_dir.join("ebpf").join("fork_monitor.bpf.o");
     fs::create_dir_all(ebpf_out_obj.parent().unwrap())
         .expect("Failed to create target/ebpf directory");
 
