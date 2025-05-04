@@ -24,9 +24,9 @@ use rtnetlink::{
 use thiserror::Error;
 use tokio::fs::metadata;
 
-type INode = u64;
-type Pid = u32;
-type NsId = u32;
+pub type INode = u64;
+pub type Pid = u32;
+pub type NsId = u32;
 
 const PROCFS_GLOB_PATTERN: &'static str = "/proc/*/ns/net";
 
@@ -306,8 +306,7 @@ impl NetworkNamespace {
     }
 }
 
-
-// ==== Utilities ==== 
+// ==== Utilities ====
 
 #[derive(Debug, Error)]
 enum ParseProcfsError {
@@ -354,7 +353,6 @@ fn parse_procfs_path_start(path: &PathBuf) -> Result<u64, ParseProcfsError> {
 
     return Ok(pid);
 }
-
 
 struct PidsIterator {
     files: Box<dyn Iterator<Item = (PathBuf, u64)>>,

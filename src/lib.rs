@@ -1,2 +1,2 @@
-pub mod netns;
 pub mod net_device;
+pub mod netns;
