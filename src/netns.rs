@@ -3,7 +3,10 @@ use std::{
     ffi::OsString,
     fs::File,
     num::ParseIntError,
-    os::{fd::{AsRawFd, RawFd}, unix::fs::MetadataExt},
+    os::{
+        fd::{AsRawFd, RawFd},
+        unix::fs::MetadataExt,
+    },
     path::{Component, Path, PathBuf},
     str::FromStr,
 };
@@ -23,6 +26,7 @@ use tokio::fs::metadata;
 
 type INode = u64;
 type Pid = u32;
+type NsId = u32;
 
 const PROCFS_GLOB_PATTERN: &'static str = "/proc/*/ns/net";
 
@@ -34,7 +38,7 @@ pub struct NetworkNamespace {
 
     // NETNSID. Network namespace can be assigned a small integer id.
     // This is also a way to uniquely identify network namespaces, but it can be not present.
-    pub id: Option<u32>,
+    pub id: Option<NsId>,
 
     /// Network namespace can be bound to a specific file. This can serve as a user-defined name source.
     /// For example, `ip netns add <name>` creates a network namespace and binds it to `/run/netns/<name>` file.
@@ -53,27 +57,17 @@ pub enum Error {
     #[error("io error - {0}")]
     IoError(#[from] std::io::Error),
     #[error("failed to query netns id - {0}")]
-    IdQueryFailed(#[from] NetnsIdError),
+    IdQueryFailed(#[from] IdError),
 }
 
 impl NetworkNamespace {
     pub async fn all() -> Result<Vec<NetworkNamespace>, Error> {
-        let files = glob(PROCFS_GLOB_PATTERN)
-            .expect("Pattern should be correct")
-            .filter_map(|file| file.ok())
-            .filter_map(|file| parse_procfs_path_start(&file).map(|pid| (file, pid)).ok());
-
         // Map from netns inode, to list of PIDs in that inode.
         let mut inodes: HashMap<INode, NetworkNamespace> = HashMap::new();
 
         // Get all (possibly unnamed) network namespaces from processes list
-        for (netns_link, pid) in files {
-            let metadata = metadata(&netns_link)
-                .await
-                .map_err(|err| Error::CouldntGetMetadata(netns_link.clone(), err))?;
-            let inode = metadata.ino();
-            let pid = pid as Pid;
-
+        let mut pids = PidsIterator::new();
+        while let Some((_netns_link, pid, inode)) = pids.next().await? {
             inodes
                 .entry(inode)
                 .and_modify(|netns| netns.pids.push(pid))
@@ -86,16 +80,8 @@ impl NetworkNamespace {
         }
 
         // Get all named namespaces from `/proc/self/mountinfo`.
-        let mounts = MountInfo::new().map_err(|err| Error::CouldntGetMountinfo(err))?;
-        for mount in mounts
-            .mounting_points
-            .into_iter()
-            .filter(|x| x.fstype == FsType::Other("nsfs".to_owned()))
-        {
-            let path = mount.path;
-            let metadata = metadata(&path).await?;
-            let inode = metadata.ino();
-
+        let mut mounts = MountsIterator::new()?;
+        while let Some((path, inode)) = mounts.next().await? {
             inodes
                 .entry(inode)
                 .and_modify(|netns| netns.fs_path = Some(path.clone()))
@@ -115,7 +101,7 @@ impl NetworkNamespace {
             let Some(file) = netns.any_file() else {
                 continue;
             };
-            let Some(netnsid) = NetworkNamespace::id_by_filepath(&mut handle, file.as_path()).await?
+            let Some(netnsid) = NetworkNamespace::id_by_path(&mut handle, file.as_path()).await?
             else {
                 continue;
             };
@@ -147,32 +133,105 @@ impl NetworkNamespace {
         self.files().next()
     }
 
-    pub async fn by_inode(handle: &mut rtnetlink::Handle, inode: INode) -> Result<Option<NetworkNamespace>, Error> {
-        todo!()
+    pub async fn by_inode(
+        handle: &mut rtnetlink::Handle,
+        target_inode: INode,
+    ) -> Result<Option<NetworkNamespace>, Error> {
+        let mut pids = Vec::new();
+
+        // Get all (possibly unnamed) network namespaces from processes list
+        let mut pids_iter = PidsIterator::new();
+        while let Some((_netns_link, pid, inode)) = pids_iter.next().await? {
+            if inode == target_inode {
+                pids.push(pid);
+            }
+        }
+
+        // Check if it is bound to a path
+        let mut fs_path = None;
+        let mut mounts = MountsIterator::new()?;
+        while let Some((path, inode)) = mounts.next().await? {
+            if inode == target_inode {
+                fs_path = Some(path);
+                break;
+            }
+        }
+
+        // If no processes use it and it does not have a path - it does not exist.
+        if pids.len() == 0 && fs_path.is_none() {
+            return Ok(None);
+        }
+
+        let mut netns = NetworkNamespace {
+            inode: target_inode,
+            id: None,
+            fs_path,
+            pids,
+        };
+
+        let path = netns.any_file().unwrap();
+        netns.id = Self::id_by_path(handle, &path).await?;
+
+        Ok(Some(netns))
     }
 
-    pub async fn by_path(handle: &mut rtnetlink::Handle, path: PathBuf) -> Result<Option<NetworkNamespace>, Error> {
-        let file = File::open(&path)
+    pub async fn by_path(
+        handle: &mut rtnetlink::Handle,
+        path: &PathBuf,
+    ) -> Result<Option<NetworkNamespace>, Error> {
+        let metadata = metadata(path)
+            .await
             .map_err(|err| Error::CouldntGetMetadata(path.clone(), err))?;
 
-        Self::by_file(handle, &file).await
+        Self::by_inode(handle, metadata.ino()).await
     }
 
-    pub async fn by_file(handle: &mut rtnetlink::Handle, path: &File) -> Result<Option<NetworkNamespace>, Error> {
-        todo!()
+    pub async fn by_file(
+        handle: &mut rtnetlink::Handle,
+        file: &File,
+    ) -> Result<Option<NetworkNamespace>, Error> {
+        let metadata = file.metadata()?;
+
+        Self::by_inode(handle, metadata.ino()).await
     }
 
-    pub async fn by_id(handle: &mut rtnetlink::Handle, id: u32) -> Result<Option<NetworkNamespace>, Error> {
-        todo!()
-    }
+    pub async fn by_id(
+        handle: &mut rtnetlink::Handle,
+        id: NsId,
+    ) -> Result<Option<NetworkNamespace>, Error> {
+        let mut all_files: HashMap<INode, PathBuf> = HashMap::new();
 
-    pub async fn subscribe_events() -> Result<(), ()> {
-        todo!()
+        let mut mounts = MountsIterator::new()?;
+        while let Some((path, inode)) = mounts.next().await? {
+            all_files.entry(inode).or_insert(path);
+        }
+
+        for (inode, filepath) in all_files {
+            if Some(id) == Self::id_by_path(handle, filepath.as_path()).await? {
+                let mut pids = Vec::new();
+
+                let mut pids_iter = PidsIterator::new();
+                while let Some((_netns_link, pid, current_inode)) = pids_iter.next().await? {
+                    if inode == current_inode {
+                        pids.push(pid);
+                    }
+                }
+
+                return Ok(Some(NetworkNamespace {
+                    inode,
+                    id: Some(id),
+                    fs_path: Some(filepath),
+                    pids,
+                }));
+            }
+        }
+
+        Ok(None)
     }
 }
 
 #[derive(Debug, Error)]
-pub enum NetnsIdError {
+pub enum IdError {
     #[error("could not open network namespace file - {0}")]
     CouldntOpenNetns(#[from] std::io::Error),
     #[error("failed to do rtnetlink request - {0}")]
@@ -180,11 +239,11 @@ pub enum NetnsIdError {
 }
 
 impl NetworkNamespace {
-    pub async fn id_by_filepath_own_connection(filepath: &Path) -> Result<Option<u32>, NetnsIdError> {
+    pub async fn id_by_path_own_connection(filepath: &Path) -> Result<Option<NsId>, IdError> {
         let (conn, mut handle, messages) = new_connection()?;
         let task = tokio::spawn(conn);
 
-        let result = Self::id_by_filepath(&mut handle, filepath).await;
+        let result = Self::id_by_path(&mut handle, filepath).await;
 
         drop(handle);
         drop(messages);
@@ -193,10 +252,10 @@ impl NetworkNamespace {
         result
     }
 
-    pub async fn id_by_filepath(
+    pub async fn id_by_path(
         handle: &mut rtnetlink::Handle,
         filepath: &Path,
-    ) -> Result<Option<u32>, NetnsIdError> {
+    ) -> Result<Option<NsId>, IdError> {
         let file = File::open(filepath)?;
 
         Self::id_by_file(handle, &file).await
@@ -205,22 +264,17 @@ impl NetworkNamespace {
     pub async fn id_by_file(
         handle: &mut rtnetlink::Handle,
         file: &File,
-    ) -> Result<Option<u32>, NetnsIdError> {
-        unsafe {
-            Self::id_by_file_descriptor(handle, file.as_raw_fd()).await
-        }
+    ) -> Result<Option<NsId>, IdError> {
+        unsafe { Self::id_by_file_descriptor(handle, file.as_raw_fd()).await }
     }
 
     pub async unsafe fn id_by_file_descriptor(
         handle: &mut rtnetlink::Handle,
         fd: RawFd,
-    ) -> Result<Option<u32>, NetnsIdError> {
-
+    ) -> Result<Option<NsId>, IdError> {
         let mut message = NsidMessage::default();
         message.header.family = AddressFamily::Unspec;
-        message
-            .attributes
-            .push(NsidAttribute::Fd(fd as u32));
+        message.attributes.push(NsidAttribute::Fd(fd as u32));
 
         let mut request = NetlinkMessage::from(RouteNetlinkMessage::GetNsId(message));
         request.header.flags = NLM_F_REQUEST;
@@ -238,7 +292,7 @@ impl NetworkNamespace {
                     for attr in attributes {
                         match attr {
                             NsidAttribute::Id(id) | NsidAttribute::CurrentNsid(id) if id >= 0 => {
-                                return Ok(Some(id as u32));
+                                return Ok(Some(id as NsId));
                             }
                             _ => {}
                         }
@@ -251,6 +305,9 @@ impl NetworkNamespace {
         Ok(None)
     }
 }
+
+
+// ==== Utilities ==== 
 
 #[derive(Debug, Error)]
 enum ParseProcfsError {
@@ -298,3 +355,65 @@ fn parse_procfs_path_start(path: &PathBuf) -> Result<u64, ParseProcfsError> {
     return Ok(pid);
 }
 
+
+struct PidsIterator {
+    files: Box<dyn Iterator<Item = (PathBuf, u64)>>,
+}
+
+impl PidsIterator {
+    pub fn new() -> Self {
+        let files = glob(PROCFS_GLOB_PATTERN)
+            .expect("Pattern should be correct")
+            .filter_map(|file| file.ok())
+            .filter_map(|file| parse_procfs_path_start(&file).map(|pid| (file, pid)).ok());
+
+        Self {
+            files: Box::new(files),
+        }
+    }
+
+    pub async fn next(&mut self) -> Result<Option<(PathBuf, Pid, INode)>, Error> {
+        match self.files.next() {
+            Some((file, pid)) => {
+                let metadata = metadata(&file)
+                    .await
+                    .map_err(|err| Error::CouldntGetMetadata(file.clone(), err))?;
+
+                Ok(Some((file, pid as Pid, metadata.ino())))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+struct MountsIterator {
+    mounts: Box<dyn Iterator<Item = PathBuf>>,
+}
+
+impl MountsIterator {
+    pub fn new() -> Result<Self, Error> {
+        let mounts = MountInfo::new().map_err(|err| Error::CouldntGetMountinfo(err))?;
+        let mounts = mounts
+            .mounting_points
+            .into_iter()
+            .filter(|x| x.fstype == FsType::Other("nsfs".to_owned()))
+            .map(|x| x.path);
+
+        Ok(Self {
+            mounts: Box::new(mounts),
+        })
+    }
+
+    pub async fn next(&mut self) -> Result<Option<(PathBuf, INode)>, Error> {
+        match self.mounts.next() {
+            None => Ok(None),
+            Some(mount) => {
+                let metadata = metadata(&mount)
+                    .await
+                    .map_err(|err| Error::CouldntGetMetadata(mount.clone(), err))?;
+
+                Ok(Some((mount, metadata.ino())))
+            }
+        }
+    }
+}

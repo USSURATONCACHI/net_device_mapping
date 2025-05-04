@@ -84,14 +84,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
-name = "cnproc"
-version = "0.2.1"
-source = "git+https://github.com/yorodm/cnproc-rs.git#fd806a19a7a11257db6000271083c5bb8c1bfaa8"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "errno"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -269,7 +261,6 @@ dependencies = [
 name = "net_device_mapping"
 version = "0.1.0"
 dependencies = [
- "cnproc",
  "errno",
  "futures",
  "glob",
@@ -277,8 +268,6 @@ dependencies = [
  "libc",
  "mountinfo",
  "netlink-proto",
- "nl",
- "regex",
  "rtnetlink",
  "thiserror 2.0.12",
  "tokio",
@@ -360,12 +349,6 @@ dependencies = [
  "cfg_aliases",
  "libc",
 ]
-
-[[package]]
-name = "nl"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bede928538cf84e6d33a3b01587d74f2a82707fe51e95804a89a7c5a1761dd97"
 
 [[package]]
 name = "object"
