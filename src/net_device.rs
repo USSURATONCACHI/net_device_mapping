@@ -1,7 +1,6 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
 
 use crate::netns::INode;
 

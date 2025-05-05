@@ -47,6 +47,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
         let mut writer = LineCountWriter::new(writer);
         writeln!(writer, "\n\n")?;
+        writeln!(writer, "Namespaces: {}", namespaces.len())?;
 
         namespaces.sort_by_key(|n| n.inode);
         for mut netns in namespaces {

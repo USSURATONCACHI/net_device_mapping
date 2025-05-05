@@ -312,7 +312,6 @@ impl State {
     /// Sends all the stored mountpoints as newly `MountChange::Added`.
     ///
     /// Returns `false` if sending an event failed (sender is closed). `true` otherwise
-    #[allow(dead_code)]
     pub fn send_mountinfo(&self, send_events: &mut Sender<MountChange>) -> bool {
         for (uuid, mount) in &self.mountinfo {
             let change: MountChange = MountChange::Added(*uuid, mount.clone());
@@ -344,12 +343,12 @@ pub fn monitor_mountinfo() -> Result<
     let fut = async move {
         let mount_fut = tokio::spawn(mount_fut);
 
-        // let mut should_run = true;
-        // if !state.send_mountinfo(&mut send) {
-        //     should_run = false;
-        // }
+        let mut should_run = true;
+        if !state.send_mountinfo(&mut send) {
+            should_run = false;
+        }
 
-        'main: loop {
+        'main: while should_run {
             tokio::select! {
                 _ = send.closed() => break 'main,
 
@@ -364,8 +363,9 @@ pub fn monitor_mountinfo() -> Result<
                             break 'main;
                         }
                     } else {
-                        use std::io::Write;
-                        writeln!(std::io::stdout().lock(), "[Mount Monitor] Unexpected mount file received from libmount: {}", mount_file.display()).unwrap();
+                        // use std::io::Write;
+                        // writeln!(std::io::stdout().lock(), "[Mount Monitor] Unexpected mount file received from libmount: {}", mount_file.display()).unwrap();
+                        panic!("[Mount Monitor] Unexpected mount file received from libmount: {}", mount_file.display());
                     }
                 }
             }
