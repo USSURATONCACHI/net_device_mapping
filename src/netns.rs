@@ -245,7 +245,7 @@ pub enum IdError {
 
 impl NetworkNamespace {
     pub async fn id_by_path_own_connection(filepath: &Path) -> Result<Option<NsId>, IdError> {
-        let (conn, mut handle, messages) = new_connection()?;
+        let (conn, mut handle, messages) = rtnetlink::new_connection()?;
         let task = tokio::spawn(conn);
 
         let result = Self::id_by_path(&mut handle, filepath).await;
@@ -281,7 +281,8 @@ impl NetworkNamespace {
         message.header.family = AddressFamily::Unspec;
         message.attributes.push(NsidAttribute::Fd(fd as u32));
 
-        let mut request = NetlinkMessage::from(RouteNetlinkMessage::GetNsId(message));
+        let mut request: NetlinkMessage<RouteNetlinkMessage> =
+            NetlinkMessage::from(RouteNetlinkMessage::GetNsId(message));
         request.header.flags = NLM_F_REQUEST;
 
         let mut responses = handle.request(request)?;

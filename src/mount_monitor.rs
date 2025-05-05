@@ -1,4 +1,8 @@
-use std::{collections::{HashMap, HashSet}, path::PathBuf, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    str::FromStr,
+};
 
 use mountinfo::MountInfo;
 use thiserror::Error;
@@ -208,7 +212,7 @@ impl State {
             .collect();
 
         // 2. Build look-ups of the *old* state:
-        let mut old_by_id:   HashMap<u32, Uuid>    = HashMap::new();
+        let mut old_by_id: HashMap<u32, Uuid> = HashMap::new();
         let mut old_by_path: HashMap<PathBuf, Uuid> = HashMap::new();
         for (uuid, mp) in &self.mountinfo {
             if let Some(id) = mp.id {
@@ -237,14 +241,20 @@ impl State {
                         }
                         // Addition of the “new” mount
                         let new_uuid = Uuid::new_v4();
-                        if send_events.send(MountChange::Added(new_uuid, mp.clone())).is_err() {
+                        if send_events
+                            .send(MountChange::Added(new_uuid, mp.clone()))
+                            .is_err()
+                        {
                             return Ok(false);
                         }
                         new_map.insert(new_uuid, mp);
                     }
                     // Same path but other metadata changed?
                     else if &mp != old_mp {
-                        if send_events.send(MountChange::Modified(uuid, mp.clone())).is_err() {
+                        if send_events
+                            .send(MountChange::Modified(uuid, mp.clone()))
+                            .is_err()
+                        {
                             return Ok(false);
                         }
                         new_map.insert(uuid, mp);
@@ -262,7 +272,10 @@ impl State {
             if let Some(&uuid) = old_by_path.get(&mp.path) {
                 let old_mp = &self.mountinfo[&uuid];
                 if &mp != old_mp {
-                    if send_events.send(MountChange::Modified(uuid, mp.clone())).is_err() {
+                    if send_events
+                        .send(MountChange::Modified(uuid, mp.clone()))
+                        .is_err()
+                    {
                         return Ok(false);
                     }
                 }
@@ -271,7 +284,10 @@ impl State {
             } else {
                 // Entirely new mount
                 let uuid = Uuid::new_v4();
-                if send_events.send(MountChange::Added(uuid, mp.clone())).is_err() {
+                if send_events
+                    .send(MountChange::Added(uuid, mp.clone()))
+                    .is_err()
+                {
                     return Ok(false);
                 }
                 new_map.insert(uuid, mp);

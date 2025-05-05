@@ -1,1 +1,5 @@
 /target
+samples/clone_netns
+samples/listen_netlink
+samples/setns_netns
+samples/unshare_netns

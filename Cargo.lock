@@ -562,6 +562,7 @@ dependencies = [
  "mountinfo",
  "netlink-proto",
  "rtnetlink",
+ "socket2",
  "thiserror 2.0.12",
  "tokio",
  "uuid",
