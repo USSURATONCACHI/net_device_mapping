@@ -1,177 +1,90 @@
-#![allow(dead_code, unused)]
+use std::time::Duration;
 
-use std::{
-    collections::HashMap,
-    mem::needs_drop,
-    os::unix::fs::MetadataExt,
-    path::{Path, PathBuf},
-    process::Output,
-    sync::RwLock,
-};
+use net_device_mapping::util::{LineCountWriter, StoppableStream};
 
-use net_device_mapping::{
-    netns::{self, INode, NetworkNamespace, NsId, Pid},
-    syscall_monitor::{self, EbpfEvent, EventType},
-};
-use thiserror::Error;
-use tokio::{
-    fs::metadata,
-    sync::broadcast::{self, Receiver},
-};
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
+    let (syscalls, syscalls_fut) = net_device_mapping::syscall_monitor::monitor_syscalls()?;
+    let (nsid_events, nsid_fut) = net_device_mapping::nsid_monitor::monitor_netns_ids()?;
+    let (mounts, mounts_fut) = net_device_mapping::mount_monitor::monitor_mountinfo()?;
 
-// #[derive(Clone, Debug)]
-// pub struct ProcessState {
-//     executable: PathBuf,
-//     task_command: String,
-//     netns: INode,
-// }
+    let (state_req_tx, state_rx, tracker_fut) =
+        net_device_mapping::netns_tracker::monitor_network_namespaces(
+            nsid_events,
+            mounts,
+            syscalls,
+        )?;
 
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("syscall monitor error - {0}")]
-    Syscall(#[from] syscall_monitor::Error),
-    #[error("io error - {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Netns error - {0}")]
-    Netns(#[from] netns::Error),
-}
+    let handle =
+        tokio::spawn(async move { tokio::join!(syscalls_fut, nsid_fut, mounts_fut, tracker_fut) });
+    let (mut states, mut stop) = StoppableStream::new(state_rx);
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ShallowNetns {
-    // NETNSID. Network namespace can be assigned a small integer id.
-    // This is also a way to uniquely identify network namespaces, but it can be not present.
-    pub id: Option<NsId>,
-
-    /// Network namespace can be bound to a specific file. This can serve as a user-defined name source.
-    /// For example, `ip netns add <name>` creates a network namespace and binds it to `/run/netns/<name>` file.
-    pub fs_path: Option<PathBuf>,
-
-    /// Used as quick reference counting.
-    pub pids_count: usize,
-}
-
-impl ShallowNetns {
-    pub fn from_netns(netns: NetworkNamespace) -> (Self, INode, Vec<Pid>) {
-        (
-            Self {
-                id: netns.id,
-                fs_path: netns.fs_path,
-                pids_count: netns.pids.len(),
-            },
-            netns.inode,
-            netns.pids,
-        )
-    }
-}
-
-struct State {
-    pub network_namespaces: HashMap<INode, ShallowNetns>,
-    pub pids: HashMap<Pid, INode>,
-}
-
-impl State {
-    pub async fn load() -> Result<Self, Error> {
-        let mut pids = HashMap::new();
-
-        let network_namespaces = NetworkNamespace::all()
-            .await?
-            .into_iter()
-            .map(ShallowNetns::from_netns)
-            .map(|(netns, inode, inode_pids)| {
-                for pid in inode_pids {
-                    pids.insert(pid, inode);
-                }
-                (inode, netns)
-            })
-            .collect();
-
-        Ok(Self {
-            network_namespaces,
-            pids,
-        })
-    }
-
-    pub fn add_pid(&mut self, pid: Pid, inode: INode) {
-        self.pids.insert(pid, inode);
-        self.network_namespaces
-            .entry(inode)
-            .and_modify(|netns| netns.pids_count += 1)
-            .or_insert(ShallowNetns {
-                id: None,
-                fs_path: None,
-                pids_count: 1,
-            });
-    }
-
-    pub fn remove_pid(&mut self, pid: Pid) {
-        if let Some(inode) = self.pids.remove(&pid) {
-            let netns = self.network_namespaces.get_mut(&inode).unwrap();
-            netns.pids_count -= 1;
-            if netns.pids_count == 0 && netns.fs_path.is_none() {
-                // Namespace is removed when its not bound to any path and have no PIDs
-                self.network_namespaces.remove(&inode);
+    // Request a state every second.
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            interval.tick().await;
+            if state_req_tx.send(()).is_err() {
+                break;
             }
         }
-    }
+    });
 
-    async fn handle_syscall_event(&mut self, event: EbpfEvent) -> std::io::Result<()> {
-        // let netns_inode = get_process_netns(event.pid).await?;
+    ctrlc::set_handler(move || stop.send(()).unwrap())?;
 
-        match event.kind {
-            EventType::Fork => {
-                let inode = get_process_netns(event.pid).await?;
-                self.add_pid(event.pid, inode);
+    println!("Monitoring specific syscalls from all processes");
+
+    let mut last_lines_count = None;
+    while let Ok(mut namespaces) = states.recv().await {
+        use std::io::Write;
+        let mut writer = std::io::stdout().lock();
+
+        if let Some(lines) = last_lines_count {
+            if lines > 0 {
+                clear_from_n_lines_above(&mut writer, lines)?;
             }
-            EventType::Exec => {}
-            EventType::Exit => {
-                self.remove_pid(event.pid);
-            }
-            EventType::Clone => todo!(),
-            EventType::Unshare => todo!(),
-            EventType::Setns => todo!(),
         }
 
-        Ok(())
+        let mut writer = LineCountWriter::new(writer);
+        writeln!(writer, "\n\n")?;
+
+        namespaces.sort_by_key(|n| n.inode);
+        for mut netns in namespaces {
+            netns.pids.sort();
+            writeln!(
+                writer,
+                "Network namespace : INode = {}\t| Id = {}\t Path = {:?}\t| Pids: {}.",
+                netns.inode,
+                match netns.id {
+                    Some(id) => id.to_string(),
+                    None => "None".to_owned(),
+                },
+                netns.fs_path,
+                netns.pids.len(),
+            )?;
+        }
+
+        last_lines_count = Some(writer.into_inner().1 as u16);
     }
-}
 
-pub async fn track_network_namespaces() -> Result<(), Error> {
-    let (mut syscall_events, syscall_notifier) =
-        net_device_mapping::syscall_monitor::monitor_syscalls()?;
-
-    let mut state = State::load();
-    tokio::spawn(syscall_notifier);
-
-    // TODO: stopping oneshot channel.
-    // TODO: Track nsfs entries from `/proc/self/mountinfo` to check for netns bound pathes change. +
-    // TODO: Subscribe to rtnetlink netns ids for ID changes.
-    // TODO: Periodically rescan procfs.
-
-    todo!();
-    // loop {
-    //     match syscall_events.recv().await {
-    //         Err(broadcast::error::RecvError::Closed) => break,
-    //         Err(broadcast::error::RecvError::Lagged(_skipped)) => continue,
-
-    //         Ok(event) => handle_syscall_event(&mut state, event).await?,
-    //     }
-    // }
+    // Make sure these future shut down gracefully
+    let (r1, r2, r3, r4) = handle.await.unwrap();
+    r1.unwrap();
+    r2.unwrap();
+    r3.unwrap();
+    r4.unwrap();
 
     Ok(())
 }
 
-async fn get_process_netns(pid: Pid) -> std::io::Result<INode> {
-    let path = Path::new("/proc")
-        .join(pid.to_string())
-        .join("ns")
-        .join("net");
+use crossterm::{
+    cursor::MoveUp,
+    execute,
+    terminal::{Clear, ClearType},
+};
+use std::io::{self, Write};
 
-    let inode = metadata(path).await?.ino();
-
-    Ok(inode)
-}
-
-#[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
-    todo!()
+/// Moves the cursor up `lines` rows, then clears from that line downwards.
+pub fn clear_from_n_lines_above<W: Write>(w: &mut W, lines: u16) -> io::Result<()> {
+    execute!(w, MoveUp(lines), Clear(ClearType::FromCursorDown),)
 }

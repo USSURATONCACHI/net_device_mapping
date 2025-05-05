@@ -106,8 +106,13 @@ pub enum Error {
     Send(#[from] SendError<EbpfEvent>),
 }
 
-pub fn monitor_syscalls()
--> Result<(Receiver<EbpfEvent>, impl Future<Output = Result<(), Error>>), Error> {
+pub fn monitor_syscalls() -> Result<
+    (
+        Receiver<EbpfEvent>,
+        impl Send + Future<Output = Result<(), Error>>,
+    ),
+    Error,
+> {
     let mut bpf = Ebpf::load_file(get_object_path()?)?;
 
     // Attach fork tracepoint

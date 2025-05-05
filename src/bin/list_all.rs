@@ -11,16 +11,13 @@ pub async fn main() {
     for mut netns in namespaces {
         netns.pids.sort();
         println!(
-            "Network namespace : INode = {}\t| Id = {}\t Path = {}\t| Pids ({}) = {:?}.",
+            "Network namespace : INode = {}\t| Id = {}\t Path = {:?}\t| Pids ({}) = {:?}.",
             netns.inode,
             match netns.id {
                 Some(id) => id.to_string(),
                 None => "None".to_owned(),
             },
-            match netns.fs_path {
-                Some(path) => path.display().to_string(),
-                None => "None".to_owned(),
-            },
+            netns.fs_path,
             netns.pids.len(),
             netns.pids
         );

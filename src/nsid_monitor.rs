@@ -11,7 +11,7 @@ use rtnetlink::{
 use thiserror::Error;
 use tokio::sync::broadcast::Receiver;
 
-pub type NsId = i32;
+use crate::netns::NsId;
 
 #[derive(Debug, Clone, Copy)]
 pub enum NetnsIdEvent {
@@ -31,7 +31,7 @@ pub enum MonitorError {
 pub fn monitor_netns_ids() -> Result<
     (
         Receiver<NetnsIdEvent>,
-        impl Future<Output = Result<(), rtnetlink::Error>>,
+        impl Send + Future<Output = Result<(), rtnetlink::Error>>,
     ),
     MonitorError,
 > {
@@ -85,7 +85,7 @@ pub fn monitor_netns_ids() -> Result<
             }
         }
         drop(messages);
-        fut_handle.await.unwrap();
+        fut_handle.abort();
         Ok(())
     };
 
@@ -95,7 +95,7 @@ pub fn monitor_netns_ids() -> Result<
 fn extract_nsid_from_attrs(attrs: impl IntoIterator<Item = NsidAttribute>) -> Option<NsId> {
     for attr in attrs.into_iter() {
         match attr {
-            NsidAttribute::Id(id) => return Some(id),
+            NsidAttribute::Id(id) => return Some(id as NsId),
             _ => {}
         }
     }

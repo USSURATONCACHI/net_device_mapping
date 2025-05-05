@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::OsString,
     fs::File,
     num::ParseIntError,
@@ -40,7 +40,7 @@ pub struct NetworkNamespace {
 
     /// Network namespace can be bound to a specific file. This can serve as a user-defined name source.
     /// For example, `ip netns add <name>` creates a network namespace and binds it to `/run/netns/<name>` file.
-    pub fs_path: Option<PathBuf>,
+    pub fs_path: HashSet<PathBuf>,
 
     /// List of all processes that are running in that namespace
     pub pids: Vec<Pid>,
@@ -66,37 +66,39 @@ impl NetworkNamespace {
         // Get all (possibly unnamed) network namespaces from processes list
         let mut pids = PidsIterator::new();
         loop {
-            let Ok(item) = pids.next().await else {
-                continue;
+            let (_filepath, pid, inode) = match pids.next().await {
+                Ok(Some(x)) => x,
+                Ok(None) => break,
+                Err(_) => continue,
             };
-            if let Some((_netns_link, pid, inode)) = item {
-                inodes
-                    .entry(inode)
-                    .and_modify(|netns| netns.pids.push(pid))
-                    .or_insert(NetworkNamespace {
-                        inode,
-                        id: None,
-                        fs_path: None,
-                        pids: vec![pid],
-                    });
-            } else {
-                break;
-            }
+            inodes
+                .entry(inode)
+                .and_modify(|netns| netns.pids.push(pid))
+                .or_insert(NetworkNamespace {
+                    inode,
+                    id: None,
+                    fs_path: HashSet::new(),
+                    pids: vec![pid],
+                });
         }
+        drop(pids);
 
         // Get all named namespaces from `/proc/self/mountinfo`.
         let mut mounts = MountsIterator::new()?;
         while let Some((path, inode)) = mounts.next().await? {
             inodes
                 .entry(inode)
-                .and_modify(|netns| netns.fs_path = Some(path.clone()))
+                .and_modify(|netns| {
+                    netns.fs_path.insert(path.clone());
+                })
                 .or_insert(NetworkNamespace {
                     inode,
                     id: None,
-                    fs_path: Some(path),
+                    fs_path: [path].into_iter().collect(),
                     pids: vec![],
                 });
         }
+        drop(mounts);
 
         // Try to query ids for each namespace
         let (conn, mut handle, messages) = new_connection()?;
@@ -153,17 +155,16 @@ impl NetworkNamespace {
         }
 
         // Check if it is bound to a path
-        let mut fs_path = None;
+        let mut fs_path = HashSet::new();
         let mut mounts = MountsIterator::new()?;
         while let Some((path, inode)) = mounts.next().await? {
             if inode == target_inode {
-                fs_path = Some(path);
-                break;
+                fs_path.insert(path);
             }
         }
 
         // If no processes use it and it does not have a path - it does not exist.
-        if pids.len() == 0 && fs_path.is_none() {
+        if pids.len() == 0 && fs_path.is_empty() {
             return Ok(None);
         }
 
@@ -225,7 +226,7 @@ impl NetworkNamespace {
                 return Ok(Some(NetworkNamespace {
                     inode,
                     id: Some(id),
-                    fs_path: Some(filepath),
+                    fs_path: [filepath].into_iter().collect(),
                     pids,
                 }));
             }
@@ -389,8 +390,8 @@ fn parse_procfs_path_start(path: &PathBuf) -> Result<u64, ParseProcfsError> {
     return Ok(pid);
 }
 
-struct PidsIterator {
-    files: Box<dyn Iterator<Item = (PathBuf, u64)>>,
+pub(crate) struct PidsIterator {
+    files: Box<dyn Send + Iterator<Item = (PathBuf, u64)>>,
 }
 
 const PROCFS_GLOB_PATTERN: &'static str = "/proc/*/task/*/ns/net";
@@ -422,7 +423,7 @@ impl PidsIterator {
 }
 
 struct MountsIterator {
-    mounts: Box<dyn Iterator<Item = PathBuf>>,
+    mounts: Box<dyn Send + Iterator<Item = PathBuf>>,
 }
 
 impl MountsIterator {
