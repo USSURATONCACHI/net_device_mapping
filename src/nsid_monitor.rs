@@ -2,7 +2,10 @@ use futures::StreamExt;
 use libc::RTNLGRP_NSID;
 use rtnetlink::{
     packet_core::{NetlinkMessage, NetlinkPayload},
-    packet_route::{nsid::{NsidAttribute, NsidMessage}, RouteNetlinkMessage},
+    packet_route::{
+        RouteNetlinkMessage,
+        nsid::{NsidAttribute, NsidMessage},
+    },
     sys::{AsyncSocket, SocketAddr},
 };
 use thiserror::Error;
@@ -40,7 +43,7 @@ pub fn monitor_netns_ids() -> Result<
         let socket = conn
             .socket_mut() // &mut TokioSocket
             .socket_mut(); // &mut netlink_sys::socket::Socket
-        
+
         socket.bind(&SocketAddr::new(0, RTNLGRP_NSID as u32))?;
         socket.add_membership(RTNLGRP_NSID as u32)?;
     }
@@ -62,11 +65,11 @@ pub fn monitor_netns_ids() -> Result<
                         NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewNsId(NsidMessage { attributes, .. })) => {
                             extract_nsid_from_attrs(attributes)
                                 .map(|x| NetnsIdEvent::Added(x))
-                        } 
+                        }
                         NetlinkPayload::InnerMessage(RouteNetlinkMessage::DelNsId(NsidMessage { attributes, .. })) => {
                             extract_nsid_from_attrs(attributes)
                                 .map(|x| NetnsIdEvent::Removed(x))
-                        } 
+                        }
                         _other => continue,
                     };
 
@@ -93,7 +96,7 @@ fn extract_nsid_from_attrs(attrs: impl IntoIterator<Item = NsidAttribute>) -> Op
     for attr in attrs.into_iter() {
         match attr {
             NsidAttribute::Id(id) => return Some(id),
-            _ => {},
+            _ => {}
         }
     }
     None
