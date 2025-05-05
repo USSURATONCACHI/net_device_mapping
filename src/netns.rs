@@ -28,8 +28,6 @@ pub type INode = u64;
 pub type Pid = u32;
 pub type NsId = u32;
 
-const PROCFS_GLOB_PATTERN: &'static str = "/proc/*/ns/net";
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct NetworkNamespace {
     /// The way to differentiate namespaces on the system.
@@ -62,23 +60,28 @@ pub enum Error {
 
 impl NetworkNamespace {
     pub async fn all() -> Result<Vec<NetworkNamespace>, Error> {
-        // TODO: Scan `/proc/*/task/<tid>/net/ns` for actual processes instead of `/proc/*/net/ns/`.
-        
         // Map from netns inode, to list of PIDs in that inode.
         let mut inodes: HashMap<INode, NetworkNamespace> = HashMap::new();
 
         // Get all (possibly unnamed) network namespaces from processes list
         let mut pids = PidsIterator::new();
-        while let Some((_netns_link, pid, inode)) = pids.next().await? {
-            inodes
-                .entry(inode)
-                .and_modify(|netns| netns.pids.push(pid))
-                .or_insert(NetworkNamespace {
-                    inode,
-                    id: None,
-                    fs_path: None,
-                    pids: vec![pid],
-                });
+        loop {
+            let Ok(item) = pids.next().await else {
+                continue;
+            };
+            if let Some((_netns_link, pid, inode)) = item {
+                inodes
+                    .entry(inode)
+                    .and_modify(|netns| netns.pids.push(pid))
+                    .or_insert(NetworkNamespace {
+                        inode,
+                        id: None,
+                        fs_path: None,
+                        pids: vec![pid],
+                    });
+            } else {
+                break;
+            }
         }
 
         // Get all named namespaces from `/proc/self/mountinfo`.
@@ -318,6 +321,13 @@ enum ParseProcfsError {
     DoesntStartWithRoot,
     #[error("path does not start with `/proc/`")]
     NonProc,
+    #[error("path does not contain a TGID")]
+    NoTgid,
+    #[error("TGID OS string cannot be parsed")]
+    ErrorneousOsTgid(OsString),
+    #[error("path has incorrect TGID - '{0}' - {1}")]
+    NotATgid(String, ParseIntError),
+
     #[error("path does not contain a PID")]
     NoPid,
     #[error("PID OS string cannot be parsed")]
@@ -326,32 +336,54 @@ enum ParseProcfsError {
     NotAPid(String, ParseIntError),
 }
 
+/// Parses `/proc/<tgid>/task/<pid>/`. Returns `pid`.
 fn parse_procfs_path_start(path: &PathBuf) -> Result<u64, ParseProcfsError> {
     if !path.is_absolute() {
         return Err(ParseProcfsError::NotAbsolute);
     }
     let mut components = path.components();
+
+    // `/`
     if !matches!(components.next(), Some(std::path::Component::RootDir)) {
         return Err(ParseProcfsError::DoesntStartWithRoot);
     }
 
+    // `proc/`
     let proc: OsString = OsString::from_str("proc").unwrap();
     if !matches!(components.next(), Some(std::path::Component::Normal(x)) if x == proc) {
         return Err(ParseProcfsError::NonProc);
     }
 
+    // TGID
+    let Some(Component::Normal(tgid)) = components.next() else {
+        return Err(ParseProcfsError::NoTgid);
+    };
+    let tgid = tgid
+        .to_str()
+        .ok_or(ParseProcfsError::ErrorneousOsTgid(tgid.to_owned()))
+        .map(|tgid| {
+            tgid.parse::<u64>()
+                .map_err(|err| ParseProcfsError::NotATgid(tgid.to_owned(), err))
+        })??;
+    let _ = tgid;
+
+    // `task/`
+    let proc: OsString = OsString::from_str("task").unwrap();
+    if !matches!(components.next(), Some(std::path::Component::Normal(x)) if x == proc) {
+        return Err(ParseProcfsError::NonProc);
+    }
+
+    // PID
     let Some(Component::Normal(pid)) = components.next() else {
         return Err(ParseProcfsError::NoPid);
     };
-    let pid = match pid.to_str() {
-        Some(x) => x,
-        None => return Err(ParseProcfsError::ErrorneousOsPid(pid.to_owned())),
-    };
-
-    let pid = match pid.parse::<u64>() {
-        Ok(pid) => pid,
-        Err(err) => return Err(ParseProcfsError::NotAPid(pid.to_owned(), err)),
-    };
+    let pid = pid
+        .to_str()
+        .ok_or(ParseProcfsError::ErrorneousOsPid(pid.to_owned()))
+        .map(|pid| {
+            pid.parse::<u64>()
+                .map_err(|err| ParseProcfsError::NotAPid(pid.to_owned(), err))
+        })??;
 
     return Ok(pid);
 }
@@ -359,6 +391,8 @@ fn parse_procfs_path_start(path: &PathBuf) -> Result<u64, ParseProcfsError> {
 struct PidsIterator {
     files: Box<dyn Iterator<Item = (PathBuf, u64)>>,
 }
+
+const PROCFS_GLOB_PATTERN: &'static str = "/proc/*/task/*/ns/net";
 
 impl PidsIterator {
     pub fn new() -> Self {

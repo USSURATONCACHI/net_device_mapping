@@ -11,10 +11,7 @@ fn main() {
     let ebpf_src = Path::new("ebpf/fork_monitor.bpf.c");
     let vmlinux_h = ebpf_out_dir.join("vmlinux.h");
 
-    let meta = MetadataCommand::new()
-        .no_deps()
-        .exec()
-        .unwrap();
+    let meta = MetadataCommand::new().no_deps().exec().unwrap();
     let profile = env::var("PROFILE").unwrap();
     let bin_dir = meta.target_directory.join(profile).into_std_path_buf();
 
