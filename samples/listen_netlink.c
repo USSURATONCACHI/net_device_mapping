@@ -1,6 +1,4 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <linux/netlink.h>
@@ -64,11 +62,12 @@ int main(void) {
         }
 
         int nsid = -1;
-        for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
-             c; c = CMSG_NXTHDR(&msg, c)) {
-            if (c->cmsg_level == SOL_NETLINK &&
-                c->cmsg_type  == NETLINK_LISTEN_ALL_NSID) {
-                nsid = *(int *)CMSG_DATA(c);
+        for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
+            printf("Message len = %zu", c->cmsg_len);
+            if (c->cmsg_level == SOL_NETLINK && c->cmsg_type  == NETLINK_LISTEN_ALL_NSID) {
+                int current_nsid = *(int *)CMSG_DATA(c);
+                printf("Received nsid: %d", current_nsid);
+                nsid = current_nsid;
                 break;
             }
         }
