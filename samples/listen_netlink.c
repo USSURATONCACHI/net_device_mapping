@@ -23,7 +23,7 @@ int main(void) {
         return 1;
     }
 
-    // Enable receiving NSID from all namespaces
+    // Not sure if this is needed.
     int listen_all = 1;
     if (setsockopt(sock, SOL_NETLINK, NETLINK_LISTEN_ALL_NSID,
                    &listen_all, sizeof(listen_all)) < 0) {
