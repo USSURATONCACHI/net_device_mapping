@@ -32,7 +32,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     ctrlc::set_handler(move || stop.send(()).unwrap())?;
 
-    println!("Monitoring specific syscalls from all processes");
+    println!("Monitoring changes to network namespaces");
 
     let mut last_lines_count = None;
     while let Ok(mut namespaces) = states.recv().await {

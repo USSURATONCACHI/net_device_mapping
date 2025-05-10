@@ -8,7 +8,7 @@ async fn main() -> Result<(), anyhow::Error> {
     tokio::spawn(fut);
     ctrlc::set_handler(move || stop.send(()).unwrap())?;
 
-    println!("Monitoring network namespaces id changes from all processes");
+    println!("Monitoring namespaces id changes");
     while let Ok(event) = events.recv().await {
         println!("{event:?}");
     }
