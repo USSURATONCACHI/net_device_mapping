@@ -44,7 +44,7 @@ pub fn monitor_netns_ids() -> Result<
             .socket_mut() // &mut TokioSocket
             .socket_mut(); // &mut netlink_sys::socket::Socket
 
-        socket.bind(&SocketAddr::new(0, RTNLGRP_NSID as u32))?;
+        socket.bind(&SocketAddr::new(0, 0))?;
         socket.add_membership(RTNLGRP_NSID as u32)?;
     }
     let fut_handle = tokio::spawn(conn);
@@ -62,13 +62,16 @@ pub fn monitor_netns_ids() -> Result<
                     let (message, _addr): (NetlinkMessage<RouteNetlinkMessage>, SocketAddr) = message;
 
                     let event = match message.payload {
-                        NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewNsId(NsidMessage { attributes, .. })) => {
-                            extract_nsid_from_attrs(attributes)
-                                .map(|x| NetnsIdEvent::Added(x))
-                        }
-                        NetlinkPayload::InnerMessage(RouteNetlinkMessage::DelNsId(NsidMessage { attributes, .. })) => {
-                            extract_nsid_from_attrs(attributes)
-                                .map(|x| NetnsIdEvent::Removed(x))
+                        NetlinkPayload::InnerMessage(inner) => match inner {
+                            RouteNetlinkMessage::NewNsId(NsidMessage { attributes, .. }) => {
+                                extract_nsid_from_attrs(attributes)
+                                    .map(|x| NetnsIdEvent::Added(x))
+                            }
+                            RouteNetlinkMessage::DelNsId(NsidMessage { attributes, .. }) => {
+                                extract_nsid_from_attrs(attributes)
+                                    .map(|x| NetnsIdEvent::Removed(x))
+                            }
+                            _ => continue,
                         }
                         _other => continue,
                     };

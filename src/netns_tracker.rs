@@ -142,24 +142,19 @@ async fn process_event(
     event: Event,
 ) -> Result<bool, Error> {
     // eprintln!("{event:?}\n");
+
     match event {
         // ==== Network namespace id change ====
         Event::NetnsIdEvent(netns_id_event) => match netns_id_event {
             NetnsIdEvent::Added(id) => {
-                if state.inc_id_count(id) == 1 {
-                    if let Some(inode) = find_netns_id_addition(&state, handle, id).await? {
-                        if let Some(netns) = state.namespace_mut(inode) {
-                            netns.id = Some(id);
-                        }
-                    }
+                if let Some(inode) = find_netns_id_addition(&state, handle, id).await? {
+                    state.ensure_namespace_mut(inode).id = Some(id);
                 }
             }
             NetnsIdEvent::Removed(id) => {
                 // Losing an ID means that namespace is removed.
-                if state.dec_id_count(id) == 0 {
-                    if let Some((inode, _)) = state.namespace_by_id(id) {
-                        state.remove_namespace(inode);
-                    }
+                if let Some((inode, _)) = state.namespace_by_id(id) {
+                    state.remove_namespace(inode);
                 }
             }
         },
@@ -186,7 +181,6 @@ async fn process_event(
                         let pathes_count = namespace.fs_path.len();
 
                         // No PIDs and no bound path = namespace deleted.
-                        // eprintln!("MountChange::Removed : {} {}", pathes_count, state.does_namespace_has_pids(&inode));
                         if pathes_count == 0 && !state.does_namespace_has_pids(&inode) {
                             state.remove_namespace(inode);
                         }
@@ -198,8 +192,7 @@ async fn process_event(
                         .get_path(*uuid)
                         .map(|path| (path, state.namespace_by_path(path)));
 
-                        // eprintln!("MountChange::Modified : {} {:?}", uuid, mount_point);
-                        if let Some((old_path, Some((_inode, namespace)))) = removed {
+                    if let Some((old_path, Some((_inode, namespace)))) = removed {
                         namespace.fs_path.remove(old_path);
                         namespace.fs_path.insert(mount_point.path.clone());
                     }
@@ -331,9 +324,6 @@ struct State {
     /// Different namespaces will have different inodes, and same namespace will always have same inode.
     pub namespaces: HashMap<INode, ShallowNamespace>,
 
-    /// Since creation and deletion events can come out-of-order, we will also store order-independent count
-    pub estimated_id_count: HashMap<NsId, i32>,
-
     /// Each process (`/proc/*/task/*/`, not group) is in exactly one network namespace.
     pub pids: HashMap<Pid, INode>,
 }
@@ -353,13 +343,8 @@ impl State {
 
         let mut namespaces = HashMap::new();
         let mut pids = HashMap::new();
-        let mut estimated_id_count = HashMap::new();
 
         for (inode, netns, netns_pids) in iter {
-            if let Some(id) = netns.id {
-                estimated_id_count.insert(id, 1);
-            }
-
             namespaces.insert(inode, netns);
 
             for pid in netns_pids {
@@ -367,18 +352,7 @@ impl State {
             }
         }
 
-        Ok(Self { namespaces, pids, estimated_id_count })
-    }
-
-    pub fn inc_id_count(&mut self, id: NsId) -> i32 {
-        *self.estimated_id_count.entry(id)
-            .and_modify(|x| *x = *x + 1)
-            .or_insert(1)
-    }
-    pub fn dec_id_count(&mut self, id: NsId) -> i32 {
-        *self.estimated_id_count.entry(id)
-            .and_modify(|x| *x = *x - 1)
-            .or_insert(-1)
+        Ok(Self { namespaces, pids })
     }
 
     pub fn current_state(&self) -> Vec<NetworkNamespace> {
@@ -410,6 +384,7 @@ impl State {
 
         self.namespaces.get_mut(&inode).unwrap()
     }
+    #[allow(dead_code)]
     pub fn namespace_mut(&mut self, inode: INode) -> Option<&mut ShallowNamespace> {
         self.namespaces.get_mut(&inode)
     }
@@ -426,6 +401,7 @@ impl State {
             .map(|(&k, v)| (k, v))
     }
 
+    #[allow(dead_code)]
     pub fn add_namespace(&mut self, netns: NetworkNamespace) -> Option<NetworkNamespace> {
         if self.namespaces.contains_key(&netns.inode) {
             Some(netns)
@@ -445,7 +421,7 @@ impl State {
     }
 
     pub fn remove_namespace(&mut self, inode: INode) -> bool {
-        if self.namespaces.remove(&inode).is_some() {
+        if let Some(_netns) = self.namespaces.remove(&inode) {
             self.pids = self
                 .pids
                 .iter()
@@ -499,6 +475,7 @@ impl MountState {
         };
     }
 
+    #[allow(dead_code)]
     pub fn has_path(&self, path: &Path) -> bool {
         self.mounts
             .iter()
@@ -509,6 +486,7 @@ impl MountState {
         self.mounts.get(&uuid).map(|m| &m.path)
     }
 
+    #[allow(dead_code)]
     pub fn all_paths(&self) -> impl Iterator<Item = &PathBuf> {
         self.mounts.values().map(|m| &m.path).sorted().dedup()
     }

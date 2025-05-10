@@ -54,6 +54,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-thread"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f8127d0634ad2b788f12e8c8623f91c584c2eb7496157b2e0cada5b01e0fbfd"
+dependencies = [
+ "futures-channel",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -637,6 +646,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-oneshot",
+ "async-thread",
  "aya",
  "cargo_metadata",
  "crossterm",
